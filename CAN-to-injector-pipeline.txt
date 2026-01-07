@@ -1,0 +1,234 @@
+# 🚦 **1. CAN bus delivers torque + RPM**
+Upstream ECU (or your dyno controller) sends a CAN frame:
+
+```
+ID: 0x200
+Bytes:
+  [0–1] = RPM (uint16)
+  [2–3] = Torque Request (uint16)
+```
+
+The Teensy’s CAN controller receives it, and the ISR updates two globals:
+
+- `engineRPM`
+- `torqueRequest`
+
+These values are now the **authoritative inputs** for the next 8 kHz control cycle.
+
+Nothing else in the system touches torque or RPM.
+
+---
+
+# 🧠 **2. Teensy’s 8 kHz loop wakes up**
+Every 125 microseconds, the Si5351’s 8 kHz sync pulse triggers the Teensy ISR.
+
+Inside that ISR:
+
+### The Teensy reads:
+- MAP (ADC)
+- EMP (ADC)
+- EGT (ADC)
+- Turbo speed (FreqMeasureMulti)
+- The latest CAN torque + RPM
+
+### The Teensy filters:
+- MAP, EMP, EGT → exponential smoothing  
+- Turbo speed → frequency → RPM conversion  
+- Torque request → no smoothing (must be responsive)
+
+### The Teensy checks safety:
+- Over‑EGT  
+- Over‑boost  
+- Over‑EMP  
+- Drive ratio limit  
+- Turbo overspeed  
+
+If anything is unsafe:
+- `systemHealthy = false`
+- `LOOP_ENABLE = LOW`
+- **All injectors stop instantly** (hardware domain powers down)
+
+If safe:
+- Continue.
+
+---
+
+# 📊 **3. Teensy consults the 16×16 maps**
+Using the CAN torque request and CAN RPM:
+
+```
+vntDuty  = VNTmap.interpolate(torque, rpm)
+lpgPulse = LPGmap.interpolate(torque, rpm)
+wgDuty   = WGmap.interpolate(torque, rpm)
+```
+
+These maps are 16×16 CSV tables stored on SD.
+
+The Teensy applies:
+- VNT inversion (if configured)
+- Single‑turbo fadeout (if configured)
+- LPG scale factor
+
+Then it updates PWM outputs for:
+- VNT
+- WG
+- LPG
+
+This is the **software‑timed** part of the system.
+
+---
+
+# 🔢 **4. Teensy computes injector parameters**
+For each of the 12 injectors:
+
+```
+pulse = torqueRequest * injFuelScale[i]
+pulse = clamp(0–255)
+
+meta = 0
+if injEnable[i]: meta |= 1
+meta |= (injPhase[i] & 0x07) << 1
+```
+
+So each injector gets:
+
+- **Pulse width** (low byte)
+- **Metadata** (high byte)
+  - Enable bit
+  - Phase bits
+  - Trim bits (future)
+
+This 16‑bit word is written into the SRAM at address = injector index.
+
+This is the **software → hardware boundary**.
+
+---
+
+# 🧱 **5. SRAM becomes the injector timing table**
+The IS62WV25616 SRAM now holds:
+
+| Address | Injector | Low Byte | High Byte |
+|---------|----------|----------|-----------|
+| 0 | #1 | pulse | metadata |
+| 1 | #2 | pulse | metadata |
+| … | … | … | … |
+| 11 | #12 | pulse | metadata |
+
+The Teensy is done.
+
+From here on, **hardware takes over**.
+
+---
+
+# ⏱️ **6. Si5351A drives the timing engine**
+The Si5351 outputs:
+
+- **1 MHz clock** → 74HC161 counters  
+- **8 kHz clock** → Teensy sync (already used)
+
+The 1 MHz clock is the **time axis** for injection.
+
+Every microsecond, the counter increments.
+
+---
+
+# 🔄 **7. 74HC161 counters generate “current time”**
+The counters free‑run:
+
+```
+0 → 255 → reset → 0 → ...
+```
+
+Modulo is set by DIP switches (cylinder count).
+
+Their 8‑bit output is the **current time in the injection cycle**.
+
+---
+
+# ⚖️ **8. Comparator checks: “Is it time to end the pulse?”**
+The CD74HC688 receives:
+
+- A inputs ← counter value  
+- B inputs ← SRAM pulse width  
+
+When:
+
+```
+counter == pulse_width
+```
+
+The comparator output toggles.
+
+This is the **exact microsecond** the injector pulse should end.
+
+No jitter.  
+No CPU.  
+No interrupts.  
+Pure hardware.
+
+---
+
+# 📐 **9. Flip‑flop shapes the injector pulse**
+The 74HC74:
+
+- Sets at cycle start  
+- Resets when comparator fires  
+- Outputs a clean, stable pulse window  
+
+This produces a **perfectly timed injector pulse**.
+
+---
+
+# 🚦 **10. AND gates apply enable + phase logic**
+The 74HC08 AND gates combine:
+
+- Pulse window  
+- Metadata bits (enable, phase)  
+- DIP enable mask  
+
+This allows:
+
+- Per‑cylinder enable/disable  
+- Phase grouping  
+- Hardware safety gating  
+
+The output is a **logic‑level injector command**.
+
+---
+
+# ⚡ **11. GaN driver fires the injector**
+Each LMG3411 receives:
+
+- Logic‑level IN from 74HC08  
+- Power from injector supply  
+- Local decoupling  
+- Fault monitoring  
+
+When IN goes high:
+- GaN FET sinks injector current  
+- Injector opens  
+- Fuel flows  
+
+When IN goes low:
+- Injector closes  
+- GaN reports any fault  
+
+FAULT pins → wired‑OR → optocoupler → Teensy.
+
+If any GaN faults:
+- Teensy drops LOOP_ENABLE  
+- Entire timing domain powers down  
+- Injectors stop instantly  
+
+---
+
+# 🔁 **12. The cycle repeats — 8,000 times per second**
+Every 125 µs:
+
+- CAN updates torque + RPM  
+- Teensy updates maps + injector parameters  
+- SRAM updates  
+- Hardware timing engine runs independently  
+- GaN drivers fire injectors with perfect precision  
+
+This is the **CAN → injector pipeline**, end‑to‑end.
