@@ -1,0 +1,233 @@
+
+# **🔥 HUNGRY MONKEY v2.9 — Narrative Signal‑Flow Walkthrough**
+### *From torque request → maps → SRAM → discrete logic → GaN → injector*
+
+This is the story of a single control cycle — 8 kHz, deterministic, hardware‑timed.
+
+---
+
+# **1. The world outside the ECU**
+The engine is running. Sensors are alive:
+
+- MAP is oscillating with boost demand  
+- EMP is tracking turbine load  
+- EGT is drifting with combustion temperature  
+- Turbo speed is screaming past 100k RPM  
+- The crank trigger is feeding RPM into the CAN sender  
+
+All of this is happening continuously, asynchronously.
+
+---
+
+# **2. Teensy 4.1 wakes up — 8 kHz sync**
+Every 125 microseconds, the Si5351A’s **8 kHz clock** triggers the Teensy’s ISR.
+
+This is the *heartbeat* of the entire ECU.
+
+Inside that ISR, the Teensy:
+
+1. Samples MAP, EMP, EGT  
+2. Reads turbo speed from the frequency counter  
+3. Reads torque request + RPM from CAN  
+4. Applies smoothing filters  
+5. Runs safety checks  
+6. Computes actuator outputs  
+7. Writes injector parameters into SRAM  
+
+This is the **software half** of the system.
+
+The Teensy decides *what* each injector should do — but not *when*.
+
+---
+
+# **3. The Teensy consults the 16×16 maps**
+Using torque request (T) and RPM (R), the Teensy performs:
+
+- Bilinear interpolation on the **VNT map**  
+- Bilinear interpolation on the **LPG map**  
+- Bilinear interpolation on the **WG map**  
+
+These maps are 16×16 CSV tables stored on the SD card.
+
+The result is:
+
+- `vntDuty` (0–100%)  
+- `lpgPulse` (0–100%)  
+- `wgDuty` (0–100%)  
+
+These are applied immediately to PWM outputs.
+
+---
+
+# **4. Teensy computes injector parameters**
+For each of the 12 injectors:
+
+- Base pulse = torque × per‑cylinder scale  
+- Phase = per‑cylinder phase slot (0–7)  
+- Enable flag = from config or DIP  
+
+It packs these into:
+
+- **Low byte** = pulse width (0–255 µs)  
+- **High byte** = metadata (enable, phase, trim)  
+
+This 16‑bit word is written into the SRAM at address = injector number.
+
+This is the **software → hardware boundary**.
+
+---
+
+# **5. SRAM becomes the lookup table**
+The IS62WV25616 SRAM now holds 12 entries:
+
+```
+Address 0 → Injector 1
+Address 1 → Injector 2
+...
+Address 11 → Injector 12
+```
+
+Each entry contains:
+
+- Pulse width (low byte)  
+- Metadata (high byte)  
+
+The Teensy is done.  
+It steps aside.
+
+From here on, **hardware takes over**.
+
+---
+
+# **6. Si5351A drives the timing engine**
+The Si5351A outputs:
+
+- **1 MHz clock** → 74HC161 counters  
+- **8 kHz clock** → Teensy sync (already used)  
+
+The 1 MHz clock is the **timebase** for injection.
+
+Every microsecond, the counter increments.
+
+---
+
+# **7. 74HC161 counters generate “time”**
+The counters free‑run:
+
+```
+0 → 255 → reset → 0 → ...
+```
+
+Modulo is set by DIP switches (cylinder count).
+
+Their 8‑bit output represents the **current time** in the injection cycle.
+
+This is the **hardware time axis**.
+
+---
+
+# **8. Comparator checks: “Is it time to end the pulse?”**
+The CD74HC688 comparator receives:
+
+- **A inputs** ← counter value  
+- **B inputs** ← SRAM pulse width  
+
+When:
+
+```
+counter == pulse_width
+```
+
+The comparator output toggles.
+
+This is the **exact moment** the injector pulse should end.
+
+No jitter.  
+No software.  
+No interrupts.  
+Pure hardware.
+
+---
+
+# **9. Flip‑flop shapes the pulse**
+The 74HC74 flip‑flop:
+
+- Sets when the cycle begins  
+- Resets when the comparator fires  
+- Outputs a clean, stable pulse window  
+
+This produces a **perfectly timed injector pulse**, with:
+
+- 1 µs resolution  
+- Zero jitter  
+- Zero CPU load  
+
+---
+
+# **10. AND gates apply enable + phase logic**
+The 74HC08 AND gates combine:
+
+- Pulse window  
+- Metadata bits (enable, phase)  
+- DIP enable mask  
+
+This allows:
+
+- Per‑cylinder enable/disable  
+- Phase grouping  
+- Hardware safety gating  
+
+The output is a **logic‑level injector command**.
+
+---
+
+# **11. GaN drivers fire the injectors**
+Each LMG3411 receives:
+
+- Logic‑level IN from 74HC08  
+- Power from injector supply  
+- Local decoupling  
+- Fault monitoring  
+
+When IN goes high:
+
+- GaN FET sinks injector current  
+- Injector opens  
+- Fuel flows  
+
+When IN goes low:
+
+- Injector closes  
+- GaN reports any fault  
+
+The FAULT pins are wired‑OR into an optocoupler → Teensy.
+
+If any GaN faults:
+
+- Teensy drops LOOP_ENABLE  
+- Entire timing domain powers down  
+- Injectors stop instantly  
+
+This is your **hardware failsafe**.
+
+---
+
+# **12. The cycle repeats — 8,000 times per second**
+Every 125 µs:
+
+- Teensy updates maps, safety, and injector parameters  
+- SRAM updates  
+- Hardware timing engine runs independently  
+- GaN drivers fire injectors with perfect precision  
+
+The system is:
+
+- Deterministic  
+- Jitter‑free  
+- Hardware‑timed  
+- Software‑controlled  
+- Safety‑interlocked  
+
+Exactly what you designed it to be.
+
+---
