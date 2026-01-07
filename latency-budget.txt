@@ -1,0 +1,217 @@
+---
+
+### 1. End‑to‑end path
+
+**Path:**
+
+1. CAN frame received  
+2. Teensy updates `torqueRequest` / `engineRPM`  
+3. Next 8 kHz control tick runs  
+4. Maps evaluated, injector pulses computed  
+5. SRAM updated  
+6. Hardware timing engine acts on new data  
+7. Next injection event uses new pulse  
+8. GaN driver switches injector current  
+
+We’ll split this into **software latency**, **control loop quantization**, and **hardware timing latency**.
+
+---
+
+### 2. CAN reception latency
+
+**Event:** Upstream ECU sends CAN frame with new torque/RPM.
+
+- **CAN bus transmission time:**  
+  At 500 kbit/s, 8‑byte data frame ≈ 200–250 µs on the wire.
+
+- **Teensy CAN controller + ISR latency:**  
+  - Hardware filters match ID 0x200  
+  - ISR runs, copies bytes into `engineRPM` and `torqueRequest`  
+  - Typical ISR service time: **5–10 µs**  
+  - Worst‑case (other interrupts active): **<20 µs**
+
+> **Budget:**  
+> ~250 µs (bus) + 20 µs (ISR worst‑case)  
+> **≈ 270 µs from upstream ECU send → `torqueRequest` updated**
+
+From this point on, the new torque/RPM are “visible” to the control loop.
+
+---
+
+### 3. 8 kHz control loop quantization
+
+The control loop runs at **8 kHz** → period = **125 µs**.
+
+The CAN frame can arrive at any time within that 125 µs window relative to the next loop tick.
+
+- **Best case:** CAN ISR completes just before the next 8 kHz tick → **0 µs wait**  
+- **Worst case:** CAN ISR completes just after a tick → **125 µs wait**  
+- **Average case:** ~62.5 µs
+
+> **Budget:**  
+> **0–125 µs**, average ~62.5 µs  
+> This is pure **sampling quantization**.
+
+---
+
+### 4. 8 kHz loop execution time
+
+Inside the 8 kHz ISR, you do:
+
+- ADC reads (MAP, EMP, EGT)  
+- Turbo speed read (FreqMeasureMulti)  
+- Filtering (a few multiplies/adds)  
+- Safety checks  
+- 3× bilinear interpolation (VNT, LPG, WG)  
+- 12× injector pulse calculations  
+- 12× SRAM writes (16‑bit each)  
+- PWM updates  
+
+On a 600 MHz M7, this is trivial.
+
+- **Estimated ISR compute time:**  
+  - ADC reads: ~5–10 µs  
+  - Filters + safety: ~5–10 µs  
+  - 3× bilinear interpolation: ~5–10 µs  
+  - 12× injector math: ~5–10 µs  
+  - 12× SRAM writes (GPIO bus): ~5–10 µs  
+
+Even pessimistically, you’re well under:
+
+> **Budget:**  
+> **≤ 40 µs** per 8 kHz tick (and that’s generous)  
+
+So from the moment the loop starts, it takes **<40 µs** to:
+
+- See the new torque/RPM  
+- Compute new injector pulses  
+- Write them into SRAM  
+
+---
+
+### 5. Hardware timing engine latency
+
+Once SRAM is updated, the **discrete logic** takes over.
+
+Key point:  
+The hardware timing engine is **not synchronized** to the 8 kHz loop; it runs continuously at **1 MHz**.
+
+So the question becomes:
+
+> How long until the next injection event that uses the new pulse width?
+
+That depends on where you are in the current injection cycle.
+
+- Counter runs at 1 MHz → period = 1 µs  
+- Pulse width is in units of 1 µs (0–255)  
+- Counter resets at end of cycle (modulo set by DIP / design)
+
+### Two relevant latencies:
+
+1. **Time until next cycle start**  
+2. **Time from cycle start to injector turn‑on**
+
+#### 5.1 Time until next cycle start
+
+If you update SRAM **mid‑cycle**, the current cycle will still use the old pulse width.  
+The new value takes effect at the **next cycle**.
+
+- **Worst case:** You update just after cycle start → wait almost full cycle  
+- **Best case:** You update just before cycle start → ~0 µs wait  
+
+If your injection cycle is, say, 256 µs (full 8‑bit range):
+
+> **Budget:**  
+> **0–256 µs** until the next cycle uses the new value  
+
+(If your modulo is smaller, this window shrinks proportionally.)
+
+#### 5.2 Time from cycle start to injector turn‑on
+
+Depending on your design, injectors may:
+
+- Turn on at cycle start, or  
+- Be phase‑shifted via metadata/logic  
+
+If they turn on at cycle start:
+
+- **Turn‑on latency from cycle start:** ~0–1 µs (logic propagation)
+
+If they are phase‑shifted:
+
+- Add phase offset (in µs) to the latency.
+
+> **Budget (logic propagation):**  
+> 74HC161 → 74HC688 → 74HC74 → 74HC08 → GaN IN  
+> **<50 ns per stage**, total **<200 ns**  
+> GaN driver propagation: **~50–100 ns**  
+
+So from the moment the hardware decides “this is the start of the pulse” to actual injector current:
+
+> **Budget:**  
+> **<0.5 µs**  
+
+---
+
+### 6. Summed latency budget
+
+Let’s put it all together for **worst case** and **typical**.
+
+#### Worst‑case path (CAN → injector current change)
+
+1. CAN frame on bus: ~250 µs  
+2. CAN ISR: 20 µs  
+3. Wait for next 8 kHz tick: 125 µs  
+4. 8 kHz ISR compute + SRAM writes: 40 µs  
+5. Wait for next injection cycle: 256 µs  
+6. Hardware propagation + GaN: 0.5 µs  
+
+> **Worst‑case total:**  
+> 250 + 20 + 125 + 40 + 256 + 0.5 ≈ **691.5 µs**  
+> Call it **~0.7 ms worst‑case** from CAN frame → injector current change.
+
+#### Typical path (average case)
+
+1. CAN frame on bus: 250 µs  
+2. CAN ISR: 10 µs  
+3. Wait for next 8 kHz tick: ~62.5 µs  
+4. 8 kHz ISR compute + SRAM writes: 20 µs  
+5. Wait for next injection cycle: ~128 µs (average)  
+6. Hardware propagation + GaN: 0.2 µs  
+
+> **Typical total:**  
+> 250 + 10 + 62.5 + 20 + 128 + 0.2 ≈ **470.7 µs**  
+> Call it **~0.47 ms typical**.
+
+---
+
+### 7. What this means in engine terms
+
+At **3000 RPM**:
+
+- 1 revolution = 20 ms  
+- 1 engine cycle (720°) = 40 ms  
+
+A **0.5–0.7 ms** latency is:
+
+- ~1.25–1.75% of a 40 ms cycle  
+- Well within what you’d consider “real‑time” for torque control  
+
+And because the **hardware timing engine** is decoupled from the control loop:
+
+- Once the new pulse width is in SRAM, the **timing of the pulse itself is perfect**, regardless of ISR jitter.
+
+---
+
+### 8. Summary table
+
+| Stage                              | Typical (µs) | Worst‑case (µs) |
+|-----------------------------------|--------------|------------------|
+| CAN bus + ISR                     | ~260         | ~270             |
+| Wait for next 8 kHz tick          | ~62.5        | 125              |
+| 8 kHz ISR compute + SRAM writes   | ~20          | 40               |
+| Wait for next injection cycle     | ~128         | 256              |
+| Hardware logic + GaN propagation  | ~0.2         | 0.5              |
+| **Total**                         | **~470.7**   | **~691.5**       |
+
+---
