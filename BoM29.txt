@@ -1,0 +1,183 @@
+# 🔧 **HUNGRY MONKEY v2.9 — COMPLETE BILL OF MATERIALS (BOM)**  
+### *Current, validated, hardware‑accurate BOM*
+
+---
+
+# **1. Core MCU + Clocking**
+
+### **Teensy 4.1 (Cortex‑M7, 600 MHz)**
+- Primary controller  
+- 8 kHz deterministic loop  
+- SRAM bus master  
+- UDP, CAN, SD, ADC, PWM  
+
+### **Si5351A‑B‑GT (I²C Programmable Clock Generator)**
+- CLK0 → 1 MHz (injector timing counters)  
+- CLK1 → 8 kHz (loop sync)  
+- <100 ps jitter  
+
+### **Crystal (25 MHz)**
+- For Si5351A  
+- 8 pF load  
+
+---
+
+# **2. Injector Timing Hardware (Discrete Logic)**
+
+### **IS62WV25616BLL‑55TLI (256K × 16 Parallel SRAM)**
+- 16‑bit data bus (pulse + metadata)  
+- 4‑bit address bus (channels 0–11)  
+- WE/OE/CE controlled by Teensy  
+
+### **74HC161 (Binary Counter, 8‑bit) × 2**
+- Free‑running 1 MHz counter  
+- DIP‑selectable modulo  
+- Provides timebase for injection  
+
+### **CD74HC688 (8‑bit Equality Comparator)**
+- Compares counter output to SRAM low byte  
+- Generates “pulse end” event  
+
+### **74HC74 (Dual D‑Flip‑Flop)**
+- Shapes comparator output  
+- Clean rising/falling edges  
+
+### **74HC08 (Quad AND Gate)**
+- Gating logic  
+- DIP enable mask  
+- Metadata enable/phase bits  
+
+---
+
+# **3. Injector Power Stage (GaN Bank)**
+
+### **Texas Instruments LMG3411R150RWHR (GaN FET + Driver) × 12**
+- One per injector  
+- Integrated gate driver  
+- 150 mΩ  
+- 600 V capable (overkill but robust)  
+- FAULT pin → opto → Teensy  
+
+### **Per‑channel bypass caps**
+- 100 nF (C0G/NP0 recommended)  
+- 1 µF (X7R)  
+
+### **Shared FAULT Bus**
+- Wired‑OR  
+- Optocoupler isolation  
+
+---
+
+# **4. Safety & Isolation**
+
+### **Optocoupler (e.g., PC817 or LTV‑817)**
+- GaN FAULT → Teensy isolation  
+
+### **TVS Diode (SMBJ series)**
+- Automotive load dump protection  
+
+### **Reverse Polarity MOSFET**
+- Ideal diode configuration  
+
+### **Buck Converter (12–24 V → 5 V)**
+- e.g., LM2596, MP1584, or automotive‑rated DC/DC  
+
+### **3.3 V LDO**
+- For logic + Si5351  
+- Low‑noise recommended  
+
+---
+
+# **5. Sensor Inputs**
+
+### **MAP Sensor (NPA201‑series or equivalent)**
+- 0.5–4.5 V output  
+- Divider ratio: 0.733  
+
+### **EMP Sensor (same type as MAP)**
+
+### **EGT Interface**
+- K‑type thermocouple amplifier  
+- e.g., MAX31855 or MAX6675  
+
+### **Turbo Speed Sensor**
+- Hall or VR  
+- Level‑shifted to 3.3 V  
+- FreqMeasureMulti input  
+
+---
+
+# **6. User Configuration Hardware**
+
+### **DIP Switch Bank (12‑position)**
+- DIP1–4 → 74HC161 modulo  
+- DIP5–12 → injector enable mask  
+
+### **Pull‑downs (10 kΩ)**
+- For all DIP lines  
+
+---
+
+# **7. Communication & Storage**
+
+### **MicroSD Card**
+- Logging  
+- Maps (16×16 CSV)  
+- config.txt  
+
+### **Ethernet PHY (LAN8720 or DP83825)**
+- Teensy RMII interface  
+- UDP 8888/8889  
+
+### **RJ45 Connector + Magnetics**
+- Integrated magjack recommended  
+
+---
+
+# **8. Connectors & Misc**
+
+### **Injector Connectors (12×)**
+- Automotive sealed (e.g., EV1, EV6, Denso)  
+
+### **Main Power Connector**
+- 12–24 V input  
+- Automotive‑rated  
+
+### **Sensor Connectors**
+- MAP, EMP, EGT, Turbo speed  
+
+### **Loop Enable Output**
+- Drives timing hardware power domain  
+
+### **Decoupling Capacitors**
+- 100 nF per IC  
+- 10 µF per power island  
+
+---
+
+# **9. PCB Requirements**
+
+### **4‑layer recommended**
+- Layer 1: Signals  
+- Layer 2: Ground plane  
+- Layer 3: Power plane  
+- Layer 4: Signals  
+
+### **Thermal vias under GaN devices**  
+### **Star‑grounding for injector returns**  
+### **Short clock traces (Si5351 → 74HC161)**  
+### **Grouped data/address bus routing**  
+
+---
+
+# **10. Optional / Expansion**
+
+### **Ignition timing hardware (future)**
+- Spare SRAM depth  
+- Additional comparators  
+
+### **CAN Transceiver**
+- MCP2562 or SN65HVD230  
+
+---
+
