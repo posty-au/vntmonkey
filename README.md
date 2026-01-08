@@ -1,5 +1,97 @@
-# vntmonkey
-A Monkey Brain for your VNT Turbos, Single VNT > Compound , the stealth performance co-pilot that rides on the shoulders of your factory ECU.
+# Hungry Monkey v2.9
 
-🐒 Hungry Monkey Control System (v1.4)Torque-on-Demand Compound & Single VNT Turbo ControllerHungry Monkey is an advanced, high-speed turbocharger management framework built for the Teensy 4.1. Originally engineered to manage a 6.0L V12 running compound GTD2873VR VGTs and an EFR 9180 on LPG, it has been abstracted into a universal tool for any VNT (Variable Nozzle Turbine) project.🚀 Core FeaturesDual Mode Logic: Toggle between SINGLE_TURBO and COMPOUND modes with a single flag.Torque-Based Control: Uses CAN-bus torque requests (Nm) and RPM to drive 3D VNT maps.Compound Handover: Seamlessly transitions flow from high-pressure VGTs to a large atmosphere turbo to prevent backpressure choking.Chemical Intercooling: Integrated LPG/Water-Meth injection logic with a "Tabletop" boost feature for high-torque cooling.Triple-Layer Safety: * Overspeed: Real-time compressor RPM monitoring.EMP Ratio: Automated vane opening if Exhaust Manifold Pressure exceeds a safe ratio of Boost (MAP).Surge Damping: Rate-of-change monitoring to prevent compressor surge during rapid spool.🛠 Hardware RequirementsController: Teensy 4.1 (600MHz ARM Cortex-M7).Signal Conditioning: * Teensy is 3.3V logic. You must use logic-level shifters (to 5V/12V) for actuators.LPG/Injectors require a Peak-and-Hold driver board or high-current MOSFET bank.Sensors: * Analog 0-5V (MAP, EMP, EGT).Frequency-based Turbo Speed Sensors (Garrett/BorgWarner).CAN-bus connectivity to the vehicle's ECU.💻 Installation & Configuration Clone the Repo
-Open in Arduino IDE / VS Code (PlatformIO):Ensure you have the FlexCAN_T4 and FreqMeasureMulti libraries installed.Calibrate Your Build:Open the main .ino file and navigate to the USER CALIBRATION SECTION. Adjust the following:SINGLE_TURBO: Set to true or false.VNT_INVERTED: Match your actuator polarity (Hella vs. Garrett).DRIVE_RATIO_LIMIT: Default is 1.5 (EMP/MAP).📈 Pin MappingPinFunctionMode2 & 3VNT Left / RightPWM Output4WastegatePWM Output5 & 8LPG Bank L / RPWM Output (10kHz)6 & 7Comp Speed L / RFrequency InputA0MAP Sensor0-5V AnalogA2EMP Sensor0-5V Analog⚠️ Safety DisclaimerUSE AT YOUR OWN RISK. This software controls high-speed rotating machinery and fuel injection systems. Incorrect configuration can result in engine failure, fire, or personal injury. Always perform initial testing on a bench or with mechanical limiters in place.📜 LicenseLicensed under the MIT License. Feel free to fork, modify, and share. Built for the community—let's keep the Monkey hungry.
+### Hardware-Timed Deterministic Injector Sequencer
+
+Hungry Monkey v2.9 is a high-precision engine management architecture designed for extreme performance applications. Unlike traditional software-only ECUs that rely on jitter-prone CPU interrupts, the Hungry Monkey utilizes a dual-layer strategy: a high-level **Cortex-M7** for complex "thinking" and a discrete logic layer for deterministic "doing".
+
+## 🏎️ Key Features
+
+* 
+**Hardware-Timed Precision**: Employs a dedicated **Si5351A clock generator** to provide a 1 MHz timebase, ensuring a fixed **1 µs resolution** for injector pulses.
+
+
+* 
+**Zero-Jitter Execution**: Offloads time-critical pulse execution to **IS62WV25616 Parallel SRAM** and discrete counters, bypassing MCU overhead and software latency.
+
+
+* 
+**GaN Power Stage**: Features **LMG3411R150 GaN drivers** for ultra-fast switching, high thermal efficiency, and robust solenoid control.
+
+
+* 
+**Hardened Safety**: A dedicated **LOOP_ENABLE master kill switch** provides a physical hardware interlock, instantly disabling injection if safety limits (EGT, Boost, RPM) are exceeded.
+
+
+* 
+**Wide & Fast Telemetry**: Native Ethernet support for high-bandwidth **UDP telemetry** (up to 10ms intervals) and real-time map updates.
+
+
+
+## 🛠️ Hardware Architecture
+
+The system consists of several beautifully interlocking discrete components:
+
+1. 
+**Si5351A Clock**: Master timing source producing 1 MHz for hardware counters and 8 kHz for deterministic control loops.
+
+
+2. 
+**Parallel SRAM**: Stores 12 injector entries, allowing instantaneous, hardware-direct access to pulse data.
+
+
+3. 
+**74HC161 Counters**: The system's "time axis," incrementing every 1 µs to schedule injection events.
+
+
+4. 
+**CD74HC688 Comparator**: The "edge detector" that identifies the exact moment "time == pulse width" to end injection.
+
+
+5. 
+**74HC08 AND Gates**: Final logic layer for per-cylinder enabling, phase grouping, and hardware safety gating.
+
+
+
+## 💻 Firmware Capabilities
+
+The Hungry Monkey v2.9 firmware is optimized for the **Teensy 4.1** and includes:
+
+* 
+**16x16 Tuning Tables**: Full bilinear interpolation for VNT, LPG, and Wastegate control.
+
+
+* 
+**Safety Hysteresis**: Hardcoded limits (e.g., **EGT > 900°C**, **Boost > 2.2 bar**) with intelligent recovery thresholds.
+
+
+* 
+**Config Persistence**: Dynamic loading/saving of system parameters (IP, turbo settings, trims) from an SD card.
+
+
+* 
+**Hardware Config**: DIP switch support to change cylinder counts (3–12) or phases without reflashing code.
+
+
+
+## 🚀 Getting Started
+
+1. **Hardware**: Flash the latest to a Teensy 4.1.
+2. 
+**SD Setup**: Place `config.txt`, `vnt_map.csv`, `lpg_map.csv`, and `wg_map.csv` on a FAT32 formatted SD card.
+
+
+3. **Networking**: Connect via Ethernet. The default IP is `192.168.1.177`.
+
+
+4. 
+**UDP Interface**: Use the dedicated command port (8888) for tuning and the telemetry port (8889) for real-time data.
+
+
+
+## 📜 License
+
+This project is licensed under the **MIT License**. See the `LICENSE` file for details.
+
+---
+
+*Designed and built by **posty-au***.
