@@ -1,0 +1,455 @@
+
+**Wideband Autonomous Module — Preliminary Schematic Blocks v1.0**
+
+Below is a clean, hierarchical text-based schematic block representation aligned 1:1 with the locked System Definition v1.0 and BoM v1.0.  
+This is structured for direct translation into schematic capture (KiCad, Altium, etc.) — each block is a sheet or hierarchical block.
+
+```
+                              +-------------------+
+                              |   POWER INPUT     |
+                              |  J4: +12V_RAW     |
+                              |      GND (PGND)   |
+                              +---------+---------+
+                                        |
+                                        | +12V_RAW
+                                        |
+                 +----------------------+----------------------+
+                 |                                             |
+         +-------v-------+                             +-------v-------+
+         |   BUCK REGULATOR   |                             |   HEATER POWER STAGE   |
+         |     U10: 12V → 5V   |                             |                       |
+         |                     |                             |   Q1: GaN FET         |
+         +-------+-------------+                             |   U2: Gate Driver     |
+                 | +5V                                        |   Rg, D1 (TVS)       |
+                 |                                            |   Snubber (optional) |
+         +-------v-------+                             +------+   PWM from Teensy    |
+         |   LDOs        |                             |      +----------------------+
+         | U11: 5V → 3.3V_A (Analog)                   |                               |
+         | U12: 5V → 3.3V_D (Digital)                  |                               |
+         +-------+-------+                                    |                               |
+                 |       |                                    |                               |
+          +3.3V_A |       | +3.3V_D                             |                               |
+                 |       |                                    |                               |
+                 |       +----------------+-------------------+-------------------------------+
+                 |                        |                   |                               |
+                 v                        v                   v                               v
+       +-----------------+       +-----------------+   +-----------------+             +-----------------+
+       |  ANALOG FRONT-END|      |  TEENSY 4.1     |   |  EXTERNAL SRAM  |             |  LSU 4.9 SENSOR |
+       |                 |      |  U1: i.MX RT1062|   |  U7: 32-64KB    |             |  J1: Connector  |
+       |  Pump Current   |<---->|                 |<--|  Parallel Bus   |             |                 |
+       |  Transimpedance |  ADC |  GPIO / DMA     |   |  /WE, /OE, /CE  |             |  Pinout:        |
+       |  U3: OPA192     |----->|                 |   |  Addr[0:15]     |             |  1: Pump +      |
+       |  Rf, Cf         |      |  PWM (Heater) --+------------------------------>|  2: Pump -      |
+       |  Vref: 1.65V    |      |  GPIO (SRAM)    |   |  Data[0:15]     |             |  3: Nernst +    |
+       +--------+--------+      |  SPI (SD)       |   +-----------------+             |  4: Nernst -    |
+                |               |  I2C (RTC)      |                                         |  5: Heater +    |
+                |               |  RMII (Ethernet)|                                         |  6: Heater -    |
+                |               |  ADC / DAC Ctrl |                                         +--------+--------+
+                |               |  GPIO (READY/FAULT)                                      |        |
+       +--------v--------+      +--------+--------+                                                |
+       |  Nernst Impedance|               |                                                         |
+       |  Sense           |               |                                                         |
+       |  U4: Op-amp AC   |               |                                                         |
+       |  Excitation      |<------------->| ADC Channels                                            |
+       |  Coupling C      |               |                                                         |
+       +--------+--------+               |                                                         |
+                |                        |                                                         |
+                |                        |                                                         |
+       +--------v--------+       +-------v-------+                                         +-------v-------+
+       |  DAC & Output    |       |  RTC          |                                         |  ETHERNET     |
+       |  Buffer         |       |  U8: DS3231   |                                         |  J3: RJ45     |
+       |  U5: MCP4725/AD5693 ---->|  I2C          |                                         |  Magnetics    |
+       |  U6: Buffer Op-amp      |  1Hz Sync ---->| GPIO                                            |  RMII from    |
+       |  0–3V Lambda Out        |  CR2032 Backup|                                                 |  Teensy PHY   |
+       |  J5: Analog Out |       +---------------+                                                 +---------------+
+       +-----------------+                                                                         
+                |                                                                                  
+                v                                                                                  
+          +-----------+                                                                            
+          |  SD CARD  |                                                                            
+          |  J2: microSD |                                                                        
+          |  SPI from Teensy|                                                                       
+          +-----------+                                                                            
+```
+
+### Hierarchical Sheet Breakdown (Recommended for Schematic Capture)
+
+1. **Sheet 1: Power Distribution & Domains**  
+   - +12V input, TVS, filtering  
+   - Buck U10 → +5V  
+   - LDOs U11/U12 → +3.3V_A and +3.3V_D  
+   - Star ground point (AGND / DGND / PGND join)  
+   - Decoupling, ferrites
+
+2. **Sheet 2: Teensy 4.1 Core**  
+   - U1 pinout  
+   - Power: +3.3V_D, decoupling  
+   - Ethernet RMII to magnetics/RJ45  
+   - SPI to SD socket  
+   - I2C to DS3231  
+   - GPIO to SRAM control  
+   - PWM output to heater driver  
+   - ADC inputs (pump current, Nernst sense)  
+   - DAC control (I2C or SPI)  
+   - READY/FAULT GPIO outputs
+
+3. **Sheet 3: Heater Power Stage**  
+   - +12V_RAW → GaN FET Q1  
+   - Gate driver U2 (level shift if needed)  
+   - PWM input from Teensy  
+   - Gate damping Rg  
+   - TVS D1, optional snubber  
+   - Heater pins to J1 (pins 5/6)  
+   - Optional current sense for aging metric
+
+4. **Sheet 4: Pump Current Front-End (Critical Path)**  
+   - LSU pump cell (J1 pins 1/2) → transimpedance U3  
+   - Precision Rf, Cf  
+   - Mid-rail reference 1.65V (from precision LDO or ref)  
+   - Anti-alias RC  
+   - Buffered output → Teensy ADC channel
+
+5. **Sheet 5: Nernst Impedance Sense**  
+   - AC excitation generator (op-amp U4 + resistors/caps)  
+   - Injection into Nernst cell (J1 pins 3/4) via coupling cap  
+   - Sense output → Teensy ADC channel  
+   - No DC path
+
+6. **Sheet 6: Analog Lambda Output**  
+   - External DAC U5 (I2C/SPI from Teensy)  
+   - Buffer op-amp U6 → 0–3V output  
+   - J5 connector  
+   - Optional low-pass filtering
+
+7. **Sheet 7: External SRAM**  
+   - U7 parallel SRAM  
+   - Address/Data buses direct to Teensy GPIO  
+   - /WE, /OE, /CE strobes  
+   - +3.3V_D power
+
+8. **Sheet 8: RTC & Peripherals**  
+   - DS3231 U8 + CR2032 holder  
+   - 1Hz sync to Teensy GPIO (optional)  
+   - SD card socket
+
+9. **Sheet 9: Sensor Connector & Protection**  
+   - J1: 6-pin LSU connector  
+   - TVS on all pins  
+   - Series resistors / ferrites where needed  
+   - Optocouplers if additional isolation required
+
+This block structure preserves the hardware–software contract:  
+- No shared analog/digital paths  
+- Heater fully isolated from sensor measurement  
+- Critical signals (pump current, Nernst) have dedicated chains  
+- All external interfaces protected
+
+
+
+1. System Logic Definition (Contract-Level)
+What this module IS
+
+A self-contained wideband instrument that outputs:
+
+Absolute Lambda (truth-calibrated)
+
+Health telemetry
+
+Deterministic timing
+
+Engine-agnostic data
+
+What this module IS NOT
+
+It does not know RPM
+
+It does not know load
+
+It does not close any fuel loops
+
+It does not care what engine it’s on
+
+This is critical:
+All engine intelligence lives elsewhere (the Monkey).
+
+Functional Contract (Hard Rules)
+Rule	Description
+R1	Sensor physics is solved locally
+R2	Heater control is closed-loop locally
+R3	Calibration is autonomous
+R4	Output Lambda is already compensated
+R5	Monkey only consumes, never corrects
+R6	Failure → explicit FAULT, never silent drift
+2. Process Flow (State Machine / Flowchart)
+
+This is the canonical startup → run → fault flow.
+Think of this as your main() super-loop plus ISR-driven peripherals.
+
+STATE 0 — Power Applied
+
+Inputs
+
++12V_RAW present
+
+Teensy reset released
+
+Actions
+
+Buck + LDOs stabilise
+
+Teensy boots from flash
+
+SRAM bus tristated
+
+Heater OFF (hard default)
+
+Exit condition
+
+All rails in spec
+
+Internal clock locked
+
+STATE 1 — Hardware Self-Test
+
+(No sensor interaction yet)
+
+Checks
+
+SRAM R/W march test
+
+SD card present + readable
+
+RTC responding
+
+Ethernet PHY link detect
+
+ADC/DAC sanity (internal loopback if used)
+
+Failure
+
+Assert FAULT pin
+
+Broadcast UDP fault packet
+
+Halt in SAFE_IDLE
+
+STATE 2 — Sensor Presence & Cold Characterisation
+
+Actions
+
+Measure Nernst cell DC resistance
+
+Verify within plausible cold range
+
+Measure heater resistance (cold)
+
+Why
+
+Confirms correct LSU variant
+
+Detects wiring faults early
+
+Failure
+
+Heater remains OFF
+
+FAULT latched
+
+STATE 3 — Heater Ramp (GaN PWM Controlled)
+
+Control Loop
+
+PWM ≥100 Hz (you meet spec)
+
+Closed-loop on inferred temperature via:
+
+Nernst impedance
+
+Heater resistance trend
+
+Rules
+
+No pump current applied
+
+No Lambda calculation
+
+Thermal shock avoidance enforced
+
+Exit condition
+
+Sensor reaches chemically active region (~750°C equivalent)
+
+STATE 4 — Free-Air Calibration (Learning Mode)
+
+Assumptions
+
+Engine not running
+
+Exhaust contains atmospheric oxygen
+
+Actions
+
+Enable pump cell
+
+Sample Ipump (burst DMA into SRAM)
+
+Statistical validation (σ, drift, bias)
+
+Calculate:
+
+Zero offset
+
+Slope correction
+
+Noise floor
+
+Persistence
+
+Update sensor_profile.txt on SD
+
+Increment aging counters
+
+Failure
+
+Mark sensor degraded
+
+Allow operation only if within safety envelope
+
+STATE 5 — Normal Operation
+
+Real-Time Loop
+
+Heater PID active
+
+Pump current sampled via ADC + DMA
+
+Lambda computed using:
+
+Stored calibration
+
+Current temperature model
+
+Output paths:
+
+UDP telemetry
+
+0–3V analog
+
+Optional debug stream
+
+Guarantees
+
+Deterministic latency
+
+No blocking I/O
+
+SRAM absorbs burst activity
+
+STATE 6 — Fault / Degradation Handling
+
+Triggers
+
+Heater overcurrent
+
+Ipump saturation
+
+Excessive noise
+
+Ethernet watchdog timeout
+
+SD write failure
+
+Actions
+
+Clamp Lambda output
+
+Assert FAULT pin
+
+Continue heater if sensor safety allows
+
+Broadcast fault status continuously
+
+3. Hardware Definition Review (Aligned to Logic)
+
+Your block diagram maps cleanly to the above states. Here’s a condensed validation.
+
+Power Architecture — ✅ Correct
+
+Separate PGND / AGND / DGND
+
+Heater completely isolated from analog front-end
+
+GaN choice is appropriate for:
+
+Fast PWM
+
+Lower switching loss
+
+Cleaner thermal profile
+
+One intentional design win:
+No attempt to measure heater current inline with analog ground.
+
+Analog Front-End — ✅ Correct Philosophy
+
+Transimpedance amp with mid-rail reference
+
+No shared reference with heater
+
+ADC sees conditioned physics, not raw chaos
+
+This is how you get repeatability, not just readings.
+
+Nernst Impedance Path — ✅ Subtle but Powerful
+
+AC-coupled excitation
+
+No DC contamination
+
+Enables:
+
+Temperature inference
+
+Aging detection
+
+Condensation events
+
+Most commercial controllers do not do this.
+
+SRAM + Clocked I/O — ✅ Matches Monkey DNA
+
+Deterministic capture
+
+Removes ISR jitter
+
+Enables future:
+
+FFT on Ipump noise
+
+Impedance spectroscopy
+
+Offline analysis
+
+This is a lab instrument trick, not an ECU trick.
+
+Ethernet (UDP) — ✅ Correct Choice
+
+Stateless
+
+Low latency
+
+Loss tolerant
+
+Matches “truth broadcaster” role
+
+No TCP nonsense, no blocking stacks.
+
+Analog Output (0–3V) — ✅ Correctly Secondary
+
+Buffered DAC
+
+Not timing critical
+
+Exists for legacy ECUs / logging
+
+It does not define truth — it exports it.
